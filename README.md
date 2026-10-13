@@ -40,6 +40,7 @@ dotnet test
 3. **Check access before collecting anything:**
 
    ```bash
+   hatzlog check-key                     # is each key valid, and does it have admin and compliance access?
    hatzlog tenants                       # lists tenants and each tenant's compliance settings
    hatzlog collect --dry-run             # lists and counts invocations, fetches and writes nothing
    ```
@@ -53,6 +54,11 @@ dotnet test
    hatzlog collect --tenant tenant_abc123 --from 2026-09-01 --to 2026-09-30   # manual range, never moves the watermark
    hatzlog scan --from 2026-10-01
    ```
+
+Hatz returns the same `401 Authentication required` for a missing, malformed or wrong key, so use `check-key` to
+tell them apart. It prints the key length (never the key), tries four endpoints, and says whether the key is
+unrecognised or valid but lacking admin/compliance permission. Surrounding quotes and whitespace on a pasted key are
+stripped automatically.
 
 Exit codes: `0` ok, `1` one or more tenants/chunks failed, `2` bad arguments or config.
 

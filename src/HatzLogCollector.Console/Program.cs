@@ -14,6 +14,7 @@ const string Usage = """
     hatzlog - collect Hatz.ai compliance logs and scan them for PII
 
     Commands
+      check-key Test each source's API key against a few endpoints and say what the result means (key is never printed)
       tenants   List tenants and their compliance settings for each configured source (no data is written)
       collect   Archive invocations (with content) to storage
       scan      Run Azure AI Language PII detection over archived content and write reports
@@ -28,6 +29,7 @@ const string Usage = """
       --dry-run          collect: list and count only; fetch and write nothing
 
     Examples
+      hatzlog check-key
       hatzlog tenants
       hatzlog collect
       hatzlog collect --tenant tenant_abc123 --from 2026-09-01 --to 2026-09-30
@@ -80,6 +82,8 @@ try
     var store = CreateStore(storageOptions);
     switch (command)
     {
+        case "check-key":
+            return await CheckKeyAsync();
         case "tenants":
             return await ListTenantsAsync();
         case "collect":
@@ -90,6 +94,59 @@ try
             Console.Error.WriteLine($"Unknown command '{command}'.");
             Console.Error.WriteLine(Usage);
             return 2;
+    }
+
+    async Task<int> CheckKeyAsync()
+    {
+        var failed = false;
+        foreach (var source in collectorOptions.Sources.Where(s => opts.Source == null || s.Name.Equals(opts.Source, StringComparison.OrdinalIgnoreCase)))
+        {
+            Console.WriteLine($"Source: {source.Name}  (variable {source.ApiKeyRef})");
+            var raw = Environment.GetEnvironmentVariable(source.ApiKeyRef);
+            if (string.IsNullOrEmpty(raw))
+            {
+                Console.WriteLine("  Variable is not set in THIS process. If you launched from Rider, put it in the run configuration's");
+                Console.WriteLine("  environment variables: a shell export is not inherited by apps started from the Dock.");
+                failed = true;
+                continue;
+            }
+
+            var key = EnvSecretResolver.Clean(raw);
+            Console.WriteLine($"  Key length: {key.Length} characters" + (key.Length != raw.Length ? $" ({raw.Length - key.Length} stripped: surrounding whitespace or quotes)" : ""));
+            if (key.Any(char.IsWhiteSpace)) Console.WriteLine("  WARNING: the key contains whitespace inside it. It is probably truncated or pasted with extra text.");
+
+            var api = HatzApiClient.Create(collectorOptions.HatzBaseUrl, key, logger);
+            var probes = new (string Label, string Path)[]
+            {
+                ("any valid key       GET chat/models", "chat/models"),
+                ("MSP admin key       GET admin/tenants/msp", "admin/tenants/msp"),
+                ("tenant listing      GET admin/tenants", "admin/tenants?limit=1"),
+                ("compliance access   GET compliance/invocations", "compliance/invocations?limit=1"),
+            };
+            var codes = new List<System.Net.HttpStatusCode>();
+            foreach (var (label, path) in probes)
+            {
+                var code = await api.ProbeAsync(path, cts.Token);
+                codes.Add(code);
+                Console.WriteLine($"  {label,-52} {(int)code} {code}");
+            }
+
+            Console.WriteLine("  Reading: " + Interpret(codes));
+            if (codes.Any(c => c != System.Net.HttpStatusCode.OK)) failed = true;
+        }
+        return failed ? 1 : 0;
+
+        static string Interpret(IReadOnlyList<System.Net.HttpStatusCode> c)
+        {
+            bool Is(int i, System.Net.HttpStatusCode code) => c[i] == code;
+            if (c.All(x => x == System.Net.HttpStatusCode.Unauthorized))
+                return "Hatz does not recognise this key at all (401 everywhere). It is wrong, revoked, or not the secret value. Create a fresh key and re-copy it.";
+            if (Is(0, System.Net.HttpStatusCode.OK) && c.Skip(1).Any(x => x is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden))
+                return "The key is valid but lacks admin and/or compliance permission. It must belong to a user with the right role (admin endpoints are marked Beta by Hatz).";
+            if (c.All(x => x == System.Net.HttpStatusCode.OK))
+                return "Key is valid with admin and compliance access.";
+            return "Mixed results; compare the statuses above. Any 5xx is Hatz-side, so retry later.";
+        }
     }
 
     async Task<int> ListTenantsAsync()
@@ -119,6 +176,8 @@ try
             {
                 failed = true;
                 Console.WriteLine($"  ERROR: {ex.Message}");
+                if (ex is HatzApiException { StatusCode: System.Net.HttpStatusCode.Unauthorized })
+                    Console.WriteLine("  Run 'hatzlog check-key' to see whether the key is invalid or just lacks admin access.");
             }
         }
         return failed ? 1 : 0;
@@ -144,6 +203,8 @@ try
             Console.WriteLine($"{Trim(r.TenantId, 28),-28} {r.Status,-20} {r.Listed,7} {r.Archived,7} {r.AlreadyArchived,7} {r.MetadataOnly,9} {r.Failed,7}");
             if (r.Reason != null) Console.WriteLine($"    {r.Reason}");
         }
+        if (results.Any(r => r.Reason?.Contains("401") == true))
+            Console.WriteLine("\nHatz rejected a key (401). Run 'hatzlog check-key' to see what it can and cannot access.");
         return results.Any(r => r.Status is TenantRunStatus.Failed or TenantRunStatus.CompletedWithErrors) ? 1 : 0;
     }
 

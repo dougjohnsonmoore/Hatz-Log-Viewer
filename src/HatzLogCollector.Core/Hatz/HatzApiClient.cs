@@ -115,6 +115,13 @@ public sealed class HatzApiClient : IHatzApi
             $"compliance/invocations/{Uri.EscapeDataString(invocationId)}" + (includeContent ? "?include_content=true" : ""),
             ct);
 
+    /// <summary>HTTP status of a GET, without throwing. For diagnosing keys and permissions.</summary>
+    public async Task<HttpStatusCode> ProbeAsync(string relativeUrl, CancellationToken ct)
+    {
+        using var response = await _http.GetAsync(relativeUrl, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+        return response.StatusCode;
+    }
+
     /// <summary>Whole-second UTC, as shown in the Hatz docs examples.</summary>
     public static string FormatTimestamp(DateTimeOffset value) =>
         value.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);

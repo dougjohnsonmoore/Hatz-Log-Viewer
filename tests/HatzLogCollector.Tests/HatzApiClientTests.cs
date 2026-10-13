@@ -149,6 +149,16 @@ public class HatzApiClientTests
     }
 
     [Fact]
+    public async Task Probe_returns_the_status_without_throwing()
+    {
+        var handler = new StubHandler().Enqueue(HttpStatusCode.Unauthorized).Enqueue(HttpStatusCode.OK);
+        var client = HatzApiClient.Create("https://example.test/v1", "k", innerHandler: handler);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, await client.ProbeAsync("admin/tenants/msp", CancellationToken.None));
+        Assert.Equal(HttpStatusCode.OK, await client.ProbeAsync("chat/models", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Retried_requests_keep_the_api_key_header()
     {
         var handler = new StubHandler().Enqueue(HttpStatusCode.BadGateway).Enqueue(HttpStatusCode.OK, "[]");
@@ -159,5 +169,39 @@ public class HatzApiClientTests
 
         Assert.Equal(2, handler.Requests.Count);
         Assert.All(handler.Requests, r => Assert.Equal("k-123", r.Headers.GetValues("X-API-Key").Single()));
+    }
+}
+
+public class SecretTests
+{
+    [Theory]
+    [InlineData("abc123", "abc123")]
+    [InlineData("  abc123\n", "abc123")]
+    [InlineData("\"abc123\"", "abc123")]
+    [InlineData("'abc123'", "abc123")]
+    [InlineData("  \"abc123\"  ", "abc123")]
+    [InlineData("ab\"c", "ab\"c")]      // interior quote is part of the key
+    [InlineData("\"abc", "\"abc")]      // unmatched quote is left alone
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void Clean_removes_paste_artifacts_only(string? raw, string expected) =>
+        Assert.Equal(expected, EnvSecretResolver.Clean(raw));
+
+    [Fact]
+    public async Task Resolver_reads_a_cleaned_value_and_reports_empty()
+    {
+        const string name = "HATZLC_TEST_SECRET";
+        try
+        {
+            Environment.SetEnvironmentVariable(name, " \"k-1\" ");
+            Assert.Equal("k-1", await new EnvSecretResolver().GetAsync(name, default));
+
+            Environment.SetEnvironmentVariable(name, "  ");
+            await Assert.ThrowsAsync<InvalidOperationException>(() => new EnvSecretResolver().GetAsync(name, default));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+        }
     }
 }
