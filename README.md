@@ -20,7 +20,7 @@ local stub of the documented API. **It has not yet been run against live Hatz or
 
 ## Build and test
 
-Requires the .NET 8 SDK (Rider works as-is).
+Requires the .NET 10 SDK (pinned in `global.json`; Rider picks it up automatically).
 
 ```bash
 dotnet build
