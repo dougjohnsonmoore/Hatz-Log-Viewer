@@ -1,0 +1,10 @@
+bin/
+obj/
+.vs/
+.idea/
+*.user
+# Local archives and reports contain client prompts/PII - never commit
+archive/
+reports/
+appsettings.local.json
+local.settings.json
