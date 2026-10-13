@@ -211,6 +211,20 @@ try
     async Task<int> ScanAsync()
     {
         var detector = CreateDetector(piiOptions);
+
+        // One tiny request up front, so a wrong endpoint or missing permission is a clear message, not a mid-scan failure.
+        var probe = await detector.DetectAsync(new[] { "Connectivity check." }, cts.Token);
+        if (probe.Count == 0 || probe[0].Failed)
+        {
+            var reason = probe.Count == 0 ? "no response" : probe[0].Error;
+            Console.Error.WriteLine($"Cannot use Azure AI Language at {new Uri(piiOptions.LanguageEndpoint!).Host}: {reason}");
+            if (reason?.Contains("401") == true || reason?.Contains("403") == true)
+                Console.Error.WriteLine("Check the key, or (for Entra auth) run 'az login' and grant your user the 'Cognitive Services User' role on the resource.");
+            else
+                Console.Error.WriteLine("Check Pii:LanguageEndpoint (https://<name>.cognitiveservices.azure.com/) and that this machine can reach it.");
+            return 2;
+        }
+
         var service = new PiiScanService(store, detector, piiOptions, logger);
         var to = opts.To ?? DateTimeOffset.UtcNow;
         var from = opts.From ?? to.AddDays(-7);
@@ -251,6 +265,11 @@ catch (OperationCanceledException)
     Console.Error.WriteLine("Cancelled.");
     return 130;
 }
+catch (PiiDetectorUnavailableException ex)
+{
+    Console.Error.WriteLine($"Scan aborted: {ex.Message}");
+    return 1;
+}
 catch (InvalidOperationException ex)
 {
     Console.Error.WriteLine($"Configuration error: {ex.Message}");
@@ -275,6 +294,7 @@ static IArchiveStore CreateStore(StorageOptions o)
 
     if (string.IsNullOrEmpty(o.AccountUrl))
         throw new InvalidOperationException("Storage:AccountUrl (or ConnectionStringEnv) is required for AzureBlob mode.");
+    ConfigGuard.RejectPlaceholder(o.AccountUrl, "Storage:AccountUrl");
     return new AzureBlobArchiveStore(new BlobServiceClient(new Uri(o.AccountUrl), new DefaultAzureCredential()));
 }
 
@@ -282,7 +302,9 @@ static IPiiDetector CreateDetector(PiiOptions o)
 {
     if (string.IsNullOrEmpty(o.LanguageEndpoint))
         throw new InvalidOperationException("Pii:LanguageEndpoint is required for 'scan'.");
-    var endpoint = new Uri(o.LanguageEndpoint);
+    ConfigGuard.RejectPlaceholder(o.LanguageEndpoint, "Pii:LanguageEndpoint");
+    if (!Uri.TryCreate(o.LanguageEndpoint, UriKind.Absolute, out var endpoint) || endpoint.Scheme != Uri.UriSchemeHttps)
+        throw new InvalidOperationException($"Pii:LanguageEndpoint must be an https URL, e.g. https://<name>.cognitiveservices.azure.com/ (got '{o.LanguageEndpoint}').");
 
     TextAnalyticsClient client;
     if (!string.IsNullOrEmpty(o.LanguageKeyEnv))

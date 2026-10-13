@@ -62,6 +62,18 @@ stripped automatically.
 
 Exit codes: `0` ok, `1` one or more tenants/chunks failed, `2` bad arguments or config.
 
+## Azure AI Language setup (needed for `scan`)
+
+1. In the Azure portal create a **Language** resource (Azure AI Services). Standard (S) tier is fine; the free tier
+   is limited to 300 requests/minute.
+2. Set `Pii:LanguageEndpoint` to its endpoint, `https://<name>.cognitiveservices.azure.com/` (a custom subdomain).
+3. Authenticate one of two ways:
+   - **Entra (preferred):** leave `LanguageKeyEnv` empty, run `az login`, and give your user the
+     *Cognitive Services User* role on the resource. Role assignments can take a few minutes to apply.
+   - **Key:** put the resource key in an environment variable and set `LanguageKeyEnv` to its name.
+4. `scan` sends one tiny request first, so a wrong endpoint or missing permission is reported as a clear message
+   before any work is done. Placeholder values such as `REPLACE_ME` in the config are rejected up front.
+
 ## How collection works
 
 - Per tenant, in ascending windows (default 24 h). After each fully successful window the watermark advances,

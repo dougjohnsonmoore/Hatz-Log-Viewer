@@ -93,3 +93,9 @@ public sealed class ScanOutput
     public List<SessionSummary> Sessions { get; } = new();
     public ScanCounters Counters { get; } = new();
 }
+
+/// <summary>The detector failed repeatedly with no successes: a configuration, network or permission problem.</summary>
+public sealed class PiiDetectorUnavailableException : Exception
+{
+    public PiiDetectorUnavailableException(string message) : base(message) { }
+}

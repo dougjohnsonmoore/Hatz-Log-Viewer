@@ -19,6 +19,9 @@ public sealed class PiiScanService
     private readonly SeverityClassifier _severity;
     private readonly ILogger _logger;
 
+    /// <summary>Abort early rather than grind through every chunk against a service that is not answering.</summary>
+    public const int MaxFailedBatchesWithoutSuccess = 5;
+
     public PiiScanService(IArchiveStore store, IPiiDetector detector, PiiOptions options, ILogger logger)
     {
         _store = store;
@@ -52,6 +55,8 @@ public sealed class PiiScanService
 
         var findings = new ConcurrentBag<PiiFinding>();
         var errors = 0;
+        var okBatches = 0;
+        var failedBatches = 0;
         var batches = jobs.Chunk(_detector.MaxBatchSize).ToList();
         await Parallel.ForEachAsync(
             batches,
@@ -59,6 +64,12 @@ public sealed class PiiScanService
             async (batch, token) =>
             {
                 var results = await _detector.DetectAsync(batch.Select(j => j.Chunk.Text).ToList(), token);
+                var batchFailed = results.Count < batch.Length || results.Any(r => r.Failed);
+                if (!batchFailed) Interlocked.Increment(ref okBatches);
+                else if (Interlocked.Increment(ref failedBatches) >= MaxFailedBatchesWithoutSuccess && Volatile.Read(ref okBatches) == 0)
+                    throw new PiiDetectorUnavailableException(
+                        $"PII detection failed for {failedBatches} batches in a row with no successes ({results.FirstOrDefault(r => r.Failed)?.Error ?? "no result"}). " +
+                        "Check Pii:LanguageEndpoint, credentials and network access.");
                 for (var i = 0; i < batch.Length; i++)
                 {
                     if (i >= results.Count || results[i].Failed)

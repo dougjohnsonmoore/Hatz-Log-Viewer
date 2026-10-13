@@ -373,3 +373,86 @@ public class ScanTests
     public void Mask_hides_the_middle(string value, string expected) =>
         Assert.Equal(expected, PiiScanService.Mask(value));
 }
+
+public class ResilienceTests
+{
+    private static readonly DateTimeOffset T0 = new(2026, 10, 12, 20, 0, 0, TimeSpan.Zero);
+
+    [Theory]
+    [InlineData("https://REPLACE_ME.cognitiveservices.azure.com/")]
+    [InlineData("tenant_REPLACE_ME")]
+    [InlineData("replace_me")]
+    public void Placeholders_are_rejected(string value) =>
+        Assert.Throws<InvalidOperationException>(() => ConfigGuard.RejectPlaceholder(value, "Setting"));
+
+    [Fact]
+    public void Real_values_and_null_pass()
+    {
+        ConfigGuard.RejectPlaceholder("https://contoso.cognitiveservices.azure.com/", "Setting");
+        ConfigGuard.RejectPlaceholder(null, "Setting");
+    }
+
+    [Fact]
+    public async Task Scan_aborts_when_the_detector_never_succeeds()
+    {
+        var store = new InMemoryStore();
+        // Many sessions -> many chunks -> many batches, all failing.
+        for (var i = 0; i < 40; i++)
+        {
+            var inv = Fixtures.Invocation($"inv-{i}", $"s-{i}", T0.AddMinutes(i),
+                new[] { Fixtures.UserMessage($"m-{i}", new string('x', 3000) + " " + i, T0.ToString("o")) });
+            await store.WriteAsync(ArchivePaths.TenantContainer(Fixtures.Tenant), ArchivePaths.InvocationPath(T0.AddMinutes(i), $"inv-{i}"),
+                Fixtures.Envelope(inv), false, default);
+        }
+        var detector = new FakeDetector { FailEverything = true, MaxDocumentLength = 3500, MaxBatchSize = 1 };
+        var service = new PiiScanService(store, detector, new PiiOptions { MaxParallelRequests = 1 }, TestLog.Logger);
+
+        var ex = await Assert.ThrowsAsync<PiiDetectorUnavailableException>(() =>
+            service.ScanContainerAsync(ArchivePaths.TenantContainer(Fixtures.Tenant), T0.AddDays(-1), T0.AddDays(1), default));
+
+        Assert.Contains("Pii:LanguageEndpoint", ex.Message);
+        Assert.True(detector.Calls <= PiiScanService.MaxFailedBatchesWithoutSuccess + 1, $"made {detector.Calls} calls before giving up");
+    }
+
+    [Fact]
+    public async Task Occasional_failures_do_not_abort_once_the_detector_has_worked()
+    {
+        var store = new InMemoryStore();
+        for (var i = 0; i < 12; i++)
+        {
+            var inv = Fixtures.Invocation($"inv-{i}", $"s-{i}", T0.AddMinutes(i),
+                new[] { Fixtures.UserMessage($"m-{i}", new string('x', 3000) + " 123-45-6789", T0.ToString("o")) });
+            await store.WriteAsync(ArchivePaths.TenantContainer(Fixtures.Tenant), ArchivePaths.InvocationPath(T0.AddMinutes(i), $"inv-{i}"),
+                Fixtures.Envelope(inv), false, default);
+        }
+        var detector = new FlakyDetector();
+        var service = new PiiScanService(store, detector, new PiiOptions { MaxParallelRequests = 1 }, TestLog.Logger);
+
+        var output = await service.ScanContainerAsync(ArchivePaths.TenantContainer(Fixtures.Tenant), T0.AddDays(-1), T0.AddDays(1), default);
+
+        Assert.True(output.Counters.ChunkErrors > 0);
+        Assert.NotEmpty(output.Findings);
+    }
+
+    /// <summary>First batch succeeds, then every other batch fails.</summary>
+    private sealed class FlakyDetector : IPiiDetector
+    {
+        private int _calls;
+        public int MaxBatchSize => 1;
+        public int MaxDocumentLength => 3500;
+
+        public Task<IReadOnlyList<PiiDocumentResult>> DetectAsync(IReadOnlyList<string> documents, CancellationToken ct)
+        {
+            var n = Interlocked.Increment(ref _calls);
+            var fail = n > 1 && n % 2 == 0;
+            IReadOnlyList<PiiDocumentResult> results = documents
+                .Select(d => fail
+                    ? PiiDocumentResult.Fail("transient")
+                    : PiiDocumentResult.Ok(d.Contains("123-45-6789")
+                        ? new[] { new DetectedEntity("123-45-6789", "USSocialSecurityNumber", null, 0.95, d.IndexOf("123-45-6789", StringComparison.Ordinal), 11) }
+                        : Array.Empty<DetectedEntity>()))
+                .ToList();
+            return Task.FromResult(results);
+        }
+    }
+}

@@ -77,7 +77,10 @@ public sealed class CollectionRunner
     {
         IEnumerable<(string Id, string? Name)> tenants;
         if (source.TenantIds is { Count: > 0 })
+        {
+            foreach (var id in source.TenantIds) ConfigGuard.RejectPlaceholder(id, $"Collector:Sources[{source.Name}]:TenantIds");
             tenants = source.TenantIds.Select(id => (id, (string?)null));
+        }
         else if (source.DiscoverTenants)
             tenants = (await api.ListTenantsAsync(ct)).Select(t => (t.Id, (string?)t.Name));
         else

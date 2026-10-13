@@ -83,3 +83,13 @@ public sealed class PiiOptions
     /// <summary>Category name to High/Medium/Low, overriding the built-in heuristics.</summary>
     public Dictionary<string, string>? SeverityOverrides { get; set; }
 }
+
+public static class ConfigGuard
+{
+    /// <summary>Rejects values still carrying the REPLACE_ME markers from appsettings.sample.json.</summary>
+    public static void RejectPlaceholder(string? value, string setting)
+    {
+        if (value != null && value.Contains("REPLACE_ME", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"{setting} is still the sample placeholder ('{value}'). Edit your config file.");
+    }
+}

@@ -19,6 +19,14 @@ public sealed class AzureLanguagePiiDetector : IPiiDetector
         _language = language;
     }
 
+    /// <summary>The SDK wraps each retry in an AggregateException; keep the first root cause only.</summary>
+    private static string Summarize(Exception ex)
+    {
+        var root = (ex is AggregateException agg ? agg.InnerExceptions.FirstOrDefault() ?? ex : ex).GetBaseException();
+        var message = root.Message;
+        return message.Length > 200 ? message[..200] + "..." : message;
+    }
+
     public int MaxBatchSize => 5;
     public int MaxDocumentLength => 5000;
 
@@ -41,11 +49,13 @@ public sealed class AzureLanguagePiiDetector : IPiiDetector
             }
             return results;
         }
-        catch (RequestFailedException ex)
+        catch (Exception ex) when (ex is RequestFailedException or HttpRequestException or AggregateException)
         {
             // The SDK has already retried transient failures. Report every document in the batch as failed
-            // so the scan can finish and the gap is visible in the run counters.
-            var error = $"HTTP {ex.Status} {ex.ErrorCode}";
+            // so the scan can decide whether to continue; the message never contains document text.
+            var error = ex is RequestFailedException { Status: > 0 } rfe
+                ? $"HTTP {rfe.Status} {rfe.ErrorCode}".Trim()
+                : Summarize(ex);
             return documents.Select(_ => PiiDocumentResult.Fail(error)).ToList();
         }
     }
